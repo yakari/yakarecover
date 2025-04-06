@@ -7,7 +7,7 @@
 # Usage: ./recover-code.sh [options]
 
 # ---- Config ----
-PROJECT_NAME=""
+PROJECT_KEYWORDS=()
 FILTER_TYPES=()
 ENABLE_ZIP=false
 OPEN_VSCODE=false
@@ -54,7 +54,7 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --project|-p)
-        PROJECT_NAME="$2"
+        IFS=',' read -ra PROJECT_KEYWORDS <<< "$2"
         shift 2
         ;;
       --filter|-f)
@@ -169,31 +169,46 @@ for file in $file_list; do
     full_content=$(cat "$file")
     filename=$(basename "$file")
 
+    filename=$(basename "$file")
+    content=$(head -n "$LINES_TO_READ" "$file")
+    full_content=$(cat "$file")
+
     best_type="unknown"
     best_score=0
     found_keywords=""
+    matched_project=""
 
-    if [[ -n "$PROJECT_NAME" ]] && echo "$full_content" | grep -qi "$PROJECT_NAME"; then
-      best_type="project"
-      best_score=999
-      found_keywords="$PROJECT_NAME"
-      echo -e "${RED}🔥 Project match ($PROJECT_NAME): $filename${NC}"
-    else
-      for type in "${!TYPE_PATTERNS[@]}"; do
-        should_include_type "$type" || continue
-        pattern="${TYPE_PATTERNS[$type]}"
-        match_count=$(echo "$content" | grep -Eo "$pattern" | wc -l)
-        if (( match_count > best_score )); then
-          best_type=$type
-          best_score=$match_count
-          found_keywords=$(echo "$content" | grep -Eo "$pattern" | sort | uniq | paste -sd "," -)
+    # Check for project matches
+    for keyword in "${PROJECT_KEYWORDS[@]}"; do
+        if echo "$full_content" | grep -iq "$keyword"; then
+            matched_project="$keyword"
+            best_type="projects/$keyword"
+            best_score=999
+            found_keywords="$keyword"
+            echo -e "${RED}🔥 Project match ($keyword): $filename${NC}"
+            break
         fi
-      done
+    done
+
+    # Fallback to language/type detection
+    if [[ -z "$matched_project" ]]; then
+        for type in "${!TYPE_PATTERNS[@]}"; do
+            should_include_type "$type" || continue
+            pattern="${TYPE_PATTERNS[$type]}"
+            match_count=$(echo "$content" | grep -Eo "$pattern" | wc -l)
+            if (( match_count > best_score )); then
+                best_type=$type
+                best_score=$match_count
+                found_keywords=$(echo "$content" | grep -Eo "$pattern" | sort | uniq | paste -sd "," -)
+            fi
+        done
     fi
 
+    # Save file to the appropriate folder
     mkdir -p "$DEST_DIR/$best_type"
-    dest_path="$DEST_DIR/$best_type/${filename}_$counter.$best_type"
+    dest_path="$DEST_DIR/$best_type/${filename}_$counter.$(basename "$best_type")"
     cp -p "$file" "$dest_path"
+
     echo "$file -> $best_type (score: $best_score, keywords: $found_keywords)" >> "$LOG_FILE"
     echo "$filename,$best_type,$best_score,\"$found_keywords\"" >> "$SUMMARY_FILE"
     ((counter++))
