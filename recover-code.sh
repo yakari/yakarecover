@@ -3,24 +3,32 @@
 # Enhanced recovery script for sorting recovered files by language type
 # Advanced version with superior language detection, progress tracking, and optimization
 
-# Error handling
+# Improve error handling and signal trapping at the beginning of the script
+set -e           # Exit immediately if a command exits with non-zero status
 set -o pipefail  # Make pipe failures exit with failure
-trap cleanup EXIT INT TERM  # Ensure cleanup on exit
 
-# Cleanup function
+# Better signal handling for proper cleanup
+trap 'echo ""; echo "Interrupted by user. Cleaning up..."; cleanup; exit 1' INT TERM
+trap cleanup EXIT
+
+# Improved cleanup function
 cleanup() {
-    # Kill any background processes
+    echo "Performing cleanup..."
+    
+    # Kill any background processes more aggressively
     if [ -n "$PROGRESS_PID" ]; then
-        kill $PROGRESS_PID 2>/dev/null || true
-        wait $PROGRESS_PID 2>/dev/null || true
+        kill -9 $PROGRESS_PID 2>/dev/null || true
     fi
+    
+    # Kill all child processes in our process group
+    pkill -P $$ 2>/dev/null || true
     
     # Clean up temp directory if it exists
     if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
         rm -rf "$TEMP_DIR" || true
     fi
     
-    # Reset terminal
+    # Reset terminal display
     tput cnorm     # Show cursor 
     tput sgr0      # Reset all attributes
     echo -e "\033[?25h"  # Show cursor (alternative method)
@@ -30,6 +38,8 @@ cleanup() {
     tput cup $(tput lines) 0
     tput el
     tput cuu1
+    
+    echo "Cleanup complete. Exiting."
 }
 
 # Default options
