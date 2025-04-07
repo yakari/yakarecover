@@ -366,29 +366,17 @@ display_progress() {
     local last_percentage=$(cat "$PROGRESS_FILE" 2>/dev/null || echo "0")
     last_percentage=$(( last_percentage + 0 ))  # Force to integer
     
-    if [ "$percentage" -ne "$last_percentage" ]; then
-        echo "$percentage" > "$PROGRESS_FILE"
-        
-        # Hide cursor during progress display
-        echo -ne "\033[?25l"
-        
-        # Clear current line and move to beginning
-        printf "\033[1K\r"
-        
-        # Print progress bar
-        local bar_size=50
-        local filled=$(( percentage * bar_size / 100 ))
-        local empty=$(( bar_size - filled ))
-        
-        printf "Progress: ["
-        printf "%${filled}s" | tr ' ' '#'
-        printf "%${empty}s" | tr ' ' ' '
-        printf "] %d%% (%d/%d files)" "$percentage" "$current" "$TOTAL_FILES"
-    fi
+    # Always update to ensure consistent display
+    echo "$percentage" > "$PROGRESS_FILE"
+    
+    # Simple progress display without complex bar that could cause backslash issues
+    printf "\r\033[KProgress: %d%% (%d/%d files)                          " \
+           "$percentage" "$current" "$TOTAL_FILES"
     
     # Show cursor again if progress is complete
     if [ "$percentage" -eq 100 ]; then
-        echo -ne "\033[?25h"
+        printf "\r\033[KProgress: 100%% Complete!                         \n"
+        echo -ne "\033[?25h"  # Show cursor
     fi
 }
 
@@ -420,255 +408,171 @@ check_project_match() {
 # Function to analyze a file's content to determine its type
 identify_file_type() {
     local file="$1"
-    local first_lines=$(head -n 20 "$file" 2>/dev/null || echo "")
-    local content_sample=$(cat "$file" 2>/dev/null | head -c 16384 || echo "")  # Examine up to 16KB
-    local ext=$(get_extension "$file")
+    local extension=$(get_extension "$file")
     local file_type=""
     
-    # Try to identify based on shebang line first
-    if grep -q "^#!" <<< "$first_lines"; then
-        if grep -q "^#!/usr/bin/env node" <<< "$first_lines" || grep -q "^#!/usr/bin/node" <<< "$first_lines"; then
-            file_type="node"
-        elif grep -q "^#!/usr/bin/env python" <<< "$first_lines" || grep -q "^#!/usr/bin/python" <<< "$first_lines"; then
-            file_type="python"
-        elif grep -q "^#!/usr/bin/env ruby" <<< "$first_lines" || grep -q "^#!/usr/bin/ruby" <<< "$first_lines"; then
-            file_type="ruby"
-        elif grep -q "^#!/usr/bin/perl" <<< "$first_lines" || grep -q "^#!/usr/bin/env perl" <<< "$first_lines"; then
-            file_type="perl"
-        elif grep -q "^#!/bin/bash" <<< "$first_lines"; then
-            file_type="bash"
-        elif grep -q "^#!/bin/sh" <<< "$first_lines"; then
-            file_type="shell"
-        elif grep -q "^#!/usr/bin/php" <<< "$first_lines"; then
-            file_type="php"
-        fi
-    fi
+    # First check existing extension for known types (prioritize standard extensions)
+    case "$extension" in
+        js|jsx|ts|tsx|vue|java|py|c|cpp|h|hpp|cs|rb|php|go|rs|swift|kt|scala)
+            # If it has a known extension, verify it with content analysis
+            file_type="$extension"
+            ;;
+        *)
+            # If no known extension, examine content
+            file_type="unknown"
+            ;;
+    esac
     
-    # If no match from shebang, try content patterns
-    if [ -z "$file_type" ]; then
-        # Vue files detection (enhanced for various Vue syntax variants)
-        if grep -q "<template" <<< "$content_sample"; then
-            # Match Vue with TypeScript syntax variants
-            if grep -q "<script.*lang=['\"]ts['\"]" <<< "$content_sample" || 
-               grep -q "<script.*setup.*lang=['\"]ts['\"]" <<< "$content_sample" || 
-               grep -q "defineProps<{" <<< "$content_sample" ||
-               grep -q "interface Props" <<< "$content_sample" && grep -q "defineProps<Props>" <<< "$content_sample"; then
-                file_type="vue-ts"
-            # Match Vue with setup syntax
-            elif grep -q "<script.*setup" <<< "$content_sample" || grep -q "defineProps" <<< "$content_sample" || grep -q "defineEmits" <<< "$content_sample"; then
-                file_type="vue-js" 
-            # Standard Vue component
-            elif grep -q "<script" <<< "$content_sample"; then
-                file_type="vue-js"
-            else
-                file_type="vue"
-            fi
+    # For extensions that don't match known types or are unknown, examine content
+    if [ "$file_type" = "unknown" ]; then
+        # Get a sample of file content
+        local content_sample=$(head -n 50 "$file" 2>/dev/null)
         
+        # Check for specific file signatures in content, from most specific to most general
+        
+        # Python detection
+        if grep -q "^import \|^from .* import \|def \|class \|if __name__ == ['\"]__main__['\"]:" <<< "$content_sample"; then
+            file_type="python"
+            
+        # Java detection
+        elif grep -q "public class\|class .* extends\|interface .* \|@Override\|import java\." <<< "$content_sample"; then
+            file_type="java"
+            
+        # C/C++ detection
+        elif grep -q "#include <\|^int main(\|void main(\|struct \|typedef \|#ifndef\|#define\|#pragma once" <<< "$content_sample"; then
+            if grep -q "std::\|namespace\|template <\|class .* {\|vector<" <<< "$content_sample"; then
+                file_type="cpp"
+            else
+                file_type="c"
+            fi
+            
+        # Vue component (must check before generic JS because Vue files contain JS)
+        elif grep -q "<template>\|export default {" <<< "$content_sample" && grep -q "<script>\|<style>" <<< "$content_sample"; then
+            # Detect if Vue component uses TypeScript
+            if grep -q "<script lang=\"ts\">\|<script lang='ts'>" <<< "$content_sample"; then
+                file_type="vue-ts"
+            else
+                file_type="vue-js"
+            fi
+            
         # React JSX/TSX detection (enhanced)
         elif grep -q "import React\|React\." <<< "$content_sample" || grep -q "from ['\"]react['\"]" <<< "$content_sample" || grep -q "React\.Component" <<< "$content_sample" || grep -q "useState\|useEffect\|useContext" <<< "$content_sample"; then
-            if grep -q ":\s*\(string\|number\|boolean\|any\|React\.\)\|interface\s\|type\s" <<< "$content_sample" || grep -q "<.*>(\{.*\})" <<< "$content_sample"; then
+            if grep -q ":\s*\(string\|number\|boolean\|any\|React\.\)\|interface\s\|type\s" <<< "$content_sample" || grep -q "<.*>\(" <<< "$content_sample"; then
                 file_type="tsx"
             else
                 file_type="jsx"
             fi
             
-        # Angular detection
-        elif grep -q "@Component" <<< "$content_sample" && grep -q "selector:" <<< "$content_sample"; then
-            file_type="angular"
-            
-        # Svelte detection
-        elif grep -q "<script" <<< "$content_sample" && grep -q "<style" <<< "$content_sample" && ! grep -q "<template" <<< "$content_sample"; then
-            file_type="svelte"
-            
-        # Framework-specific detection
-        elif grep -q "defineNuxtConfig\|useNuxtApp\|useRuntimeConfig" <<< "$content_sample"; then
-            file_type="nuxt"
-        elif grep -q "getStaticProps\|getServerSideProps\|NextPage\|NextApiRequest" <<< "$content_sample"; then
-            file_type="next"
-        elif grep -q "createClient\|supabase\|from('profiles')\|from('auth')" <<< "$content_sample"; then
-            file_type="supabase"
-        elif grep -q "firebase\|initializeApp\|getFirestore\|getAuth" <<< "$content_sample"; then
-            file_type="firebase"
-        elif grep -q "express\|app.get\|app.use\|app.post\|app.listen" <<< "$content_sample"; then
-            file_type="express"
-        elif grep -q "@SpringBootApplication\|@Controller\|@Repository\|@Service" <<< "$content_sample"; then
-            file_type="spring"
-        elif grep -q "class.*extends.*Model\|Schema::\|Route::\|namespace App\\" <<< "$content_sample"; then
-            file_type="laravel"
-        elif grep -q "from django\|@admin.register\|class.*Model\|class.*Form" <<< "$content_sample"; then
-            file_type="django"
-        elif grep -q "class.*ActiveRecord::\|class.*ApplicationController\|Rails.application" <<< "$content_sample"; then
-            file_type="rails"
-        
-        # Programming languages detection
-        elif grep -q "<?php" <<< "$content_sample" || grep -q "namespace\s\+[A-Z]" <<< "$content_sample" && grep -q "use\s\+[A-Z]" <<< "$content_sample"; then
-            file_type="php"
-        elif grep -q "package\s\+[a-z]" <<< "$content_sample" && grep -q "import\s\+[a-z]" <<< "$content_sample" && grep -q "public\s\+class" <<< "$content_sample"; then
-            file_type="java" 
-        elif grep -q "fun\s\+[a-z]" <<< "$content_sample" && grep -q "val\s\+[a-z]" <<< "$content_sample"; then
-            file_type="kotlin"
-        elif grep -q "object\s\+[A-Z]" <<< "$content_sample" && grep -q "def\s\+[a-z]" <<< "$content_sample" && grep -q "case\s\+class" <<< "$content_sample"; then
-            file_type="scala"
-        elif grep -q "def\s\+[a-z]" <<< "$content_sample" && grep -q "import\s\+[a-z]" <<< "$content_sample" && ! grep -q "func\s\+[a-z]" <<< "$content_sample"; then
-            if grep -q "@" <<< "$content_sample" && grep -q "class\s\+[A-Z]" <<< "$content_sample"; then
-                file_type="groovy"
-            else
-                file_type="python"
-            fi
-        elif grep -q "func\s\+[a-z]" <<< "$content_sample" && grep -q "package\s\+[a-z]" <<< "$content_sample"; then
-            file_type="go"
-        elif grep -q "fn\s\+[a-z]" <<< "$content_sample" && grep -q "use\s\+[a-z]" <<< "$content_sample" && grep -q "pub\s\+struct" <<< "$content_sample"; then
-            file_type="rust"
-        elif grep -q "namespace\s\+[A-Z]" <<< "$content_sample" && grep -q "using\s\+[A-Z]" <<< "$content_sample" && grep -q "public\s\+class" <<< "$content_sample"; then
-            file_type="csharp"
-        elif grep -q "module\s\+[A-Z]" <<< "$content_sample" && grep -q "open\s\+[A-Z]" <<< "$content_sample" && grep -q "let\s\+[a-z]" <<< "$content_sample"; then
-            file_type="fsharp"
-        elif grep -q "my\s\+\$[a-z]" <<< "$content_sample" || grep -q "sub\s\+[a-z]" <<< "$content_sample" && grep -q "\$[a-z]" <<< "$content_sample"; then
-            file_type="perl"
-        elif grep -q "#include\s\+<[a-z]" <<< "$content_sample" || grep -q "int\s\+main" <<< "$content_sample"; then
-            if grep -q "class\s\+[A-Z]" <<< "$content_sample" || grep -q "template\s\+<" <<< "$content_sample" || grep -q "std::" <<< "$content_sample"; then
-                file_type="cpp"
-            else
-                file_type="c"
-            fi
-        elif grep -q "import\s\+[A-Z]" <<< "$content_sample" && grep -q "@interface" <<< "$content_sample" || grep -q "@implementation" <<< "$content_sample"; then
-            file_type="objective-c"
-        elif grep -q "import\s\+[A-Z]" <<< "$content_sample" && grep -q "class\s\+[A-Z]" <<< "$content_sample" && grep -q "func\s\+[a-z]" <<< "$content_sample"; then
-            file_type="swift"
-        
-        # Web language detection (enhanced TypeScript detection)
-        elif grep -q "interface\s\+[A-Z][A-Za-z]*\s*{\|type\s\+[A-Z][A-Za-z]*\s*=\|class\s.*implements\s\+[A-Z]" <<< "$content_sample" || 
-             grep -q "export\s\+type\s\+" <<< "$content_sample" ||
-             grep -q ":\s*\(string\|number\|boolean\|any\|unknown\|void\|never\)\(\[\]\)*" <<< "$content_sample" ||
-             grep -q "<.*>\(" <<< "$content_sample" ||
-             grep -q "as\s\+const" <<< "$content_sample" ||
-             grep -q "import\s\+{.*}\s\+from" <<< "$content_sample" && grep -q ":[^=]" <<< "$content_sample"; then
+        # TypeScript detection
+        elif grep -q "interface \|type \|:\s*\(string\|number\|boolean\|any\)\|class .* implements" <<< "$content_sample"; then
             file_type="ts"
-        elif grep -q "function\s\+[a-z]" <<< "$content_sample" || grep -q "const\s\+[a-z]" <<< "$content_sample" || grep -q "let\s\+[a-z]" <<< "$content_sample" || grep -q "var\s\+[a-z]" <<< "$content_sample" || grep -q "=>" <<< "$content_sample"; then
-            if grep -q "require(" <<< "$content_sample" || grep -q "module.exports" <<< "$content_sample" || grep -q "process.env" <<< "$content_sample"; then
-                file_type="node"
-            else
-                file_type="js"
-            fi
-        elif grep -q "<!DOCTYPE\|<html\|<head\|<body" <<< "$content_sample"; then
+            
+        # JavaScript detection
+        elif grep -q "function\|const\|let\|var\|import\|export\|=>\|module\.exports\|require(" <<< "$content_sample"; then
+            file_type="js"
+            
+        # HTML detection
+        elif grep -q "<!DOCTYPE html>\|<html>\|<head>\|<body>\|<div>\|<script>" <<< "$content_sample"; then
             file_type="html"
-        elif grep -q "@import\|@mixin\|@include\|\$" <<< "$content_sample" && grep -q "{" <<< "$content_sample"; then
-            file_type="scss"
-        elif grep -q "@import" <<< "$content_sample" && grep -q "{" <<< "$content_sample" && grep -q "&" <<< "$content_sample"; then
-            file_type="less"
-        elif grep -q "\$" <<< "$content_sample" && ! grep -q "{" <<< "$content_sample"; then
-            file_type="sass"
-        elif grep -q "{" <<< "$content_sample" && grep -q ";" <<< "$content_sample" && grep -q ":" <<< "$content_sample"; then
+            
+        # CSS detection
+        elif grep -q "{\s*\(color\|background\|font-size\|margin\|padding\)" <<< "$content_sample"; then
             file_type="css"
             
-        # Data/Config detection
-        elif grep -q "^\s*{" <<< "$content_sample" && grep -q ":" <<< "$content_sample" && ! grep -q ";" <<< "$content_sample"; then
-            file_type="json"
-        elif grep -q "^\s*-" <<< "$content_sample" || grep -q ":\s*$" <<< "$content_sample"; then
-            file_type="yaml"
-        elif grep -q "^\s*\[[a-zA-Z]" <<< "$content_sample" && grep -q "=" <<< "$content_sample"; then
-            file_type="toml"
-        elif grep -q "^<\?xml" <<< "$content_sample" || (grep -q "<[a-zA-Z]" <<< "$content_sample" && grep -q "</[a-zA-Z]" <<< "$content_sample"); then
-            file_type="xml"
-        elif grep -q "^\s*\[[a-zA-Z]" <<< "$content_sample" && grep -q "=" <<< "$content_sample" && ! grep -q ":" <<< "$content_sample"; then
-            file_type="ini"
-        elif grep -q "^[A-Z_]+=." <<< "$content_sample"; then
-            file_type="env"
-        elif grep -q "^[a-zA-Z]\+\.[a-zA-Z]\+=" <<< "$content_sample"; then
-            file_type="properties"
-        elif grep -q "^\"" <<< "$content_sample" && grep -q "\"," <<< "$content_sample"; then
-            file_type="csv"
-            
-        # Database files detection
-        elif grep -q "SELECT\|INSERT\|UPDATE\|DELETE\|CREATE TABLE" <<< "$content_sample"; then
-            file_type="sql"
-        elif grep -q "type\s\+Query\|type\s\+Mutation\|input\s\+[A-Z]" <<< "$content_sample"; then
-            file_type="graphql"
-        elif grep -q "db\.[a-zA-Z]\+\.find\|db\.[a-zA-Z]\+\.aggregate" <<< "$content_sample"; then
-            file_type="mongo"
-            
-        # Documentation detection
-        elif grep -q "^#\s\|^##\s" <<< "$content_sample" && ! grep -q "import\s\+[a-z]" <<< "$content_sample"; then
-            file_type="md"
-        elif grep -q "^[A-Za-z]" <<< "$content_sample" && ! grep -q "[<>{};]" <<< "$content_sample"; then
-            file_type="txt"
-        elif grep -q "^\.\.\s\+" <<< "$content_sample" || grep -q "^===\+$" <<< "$content_sample"; then
-            file_type="rst"
-        elif grep -q "\\\\begin{\|\\\\section{\|\\\\documentclass" <<< "$content_sample"; then
-            file_type="latex"
-            
-        # Scripting detection
-        elif grep -q "^@echo\|^set\s\+[a-zA-Z]=" <<< "$content_sample"; then
-            file_type="batch"
-        elif grep -q "param(\|function\s\+[A-Z]" <<< "$content_sample" && grep -q "\$" <<< "$content_sample"; then
-            file_type="powershell"
-            
-        # Configuration detection
-        elif grep -q "config\." <<< "$content_sample" || grep -q "^\s*module.exports\s*=" <<< "$content_sample" || grep -q "webpack\|babel\|eslint\|tsconfig" <<< "$first_lines"; then
-            file_type="config"
-            
-        # Default to source file if it has code-like content but couldn't be classified
-        elif grep -q "function\|class\|import\|export\|var\|const\|let\|if\|for\|while" <<< "$content_sample"; then
-            file_type="src"
+        # Default to text if we couldn't determine
         else
-            # Try to identify binary files
-            if file "$file" | grep -q "executable\|binary\|data"; then
-                file_type="binary"
-            else
-                file_type="unknown"
+            file_type="text"
+        fi
+    else
+        # Additional verification for files with known extensions
+        
+        # For Vue files, verify they're actually Vue components
+        if [ "$file_type" = "vue" ]; then
+            if ! grep -q "<template>\|<script>\|<style>" "$file"; then
+                # This isn't a Vue component, reclassify
+                local new_type=$(identify_file_type_without_extension "$file")
+                if [ -n "$new_type" ]; then
+                    file_type="$new_type"
+                fi
+            fi
+        fi
+        
+        # Verify TypeScript files
+        if [ "$file_type" = "ts" ] || [ "$file_type" = "tsx" ]; then
+            if ! grep -q ":\s*\(string\|number\|boolean\|any\)\|interface\s\|type\s" "$file"; then
+                # This might not be TypeScript, reclassify
+                if [ "$file_type" = "tsx" ]; then
+                    file_type="jsx"
+                else
+                    file_type="js"
+                fi
             fi
         fi
     fi
     
-    # Fall back to extension-based detection if we couldn't determine type
-    if [ -z "$file_type" ] && [ ! -z "$ext" ]; then
-        case "$ext" in
-            js)  file_type="js" ;;
-            ts)  file_type="ts" ;;
-            jsx) file_type="jsx" ;;
-            tsx) file_type="tsx" ;;
-            vue) file_type="vue" ;;
-            php) file_type="php" ;;
-            py)  file_type="python" ;;
-            rb)  file_type="ruby" ;;
-            java) file_type="java" ;;
-            kt) file_type="kotlin" ;;
-            scala) file_type="scala" ;;
-            groovy) file_type="groovy" ;;
-            go) file_type="go" ;;
-            rs) file_type="rust" ;;
-            cs) file_type="csharp" ;;
-            fs) file_type="fsharp" ;;
-            pl) file_type="perl" ;;
-            c) file_type="c" ;;
-            cpp|cc|cxx|h|hpp) file_type="cpp" ;;
-            swift) file_type="swift" ;;
-            m) file_type="objective-c" ;;
-            html|htm) file_type="html" ;;
-            css) file_type="css" ;;
-            scss) file_type="scss" ;;
-            less) file_type="less" ;;
-            sass) file_type="sass" ;;
-            json) file_type="json" ;;
-            yml|yaml) file_type="yaml" ;;
-            toml) file_type="toml" ;;
-            xml) file_type="xml" ;;
-            ini) file_type="ini" ;;
-            env) file_type="env" ;;
-            properties) file_type="properties" ;;
-            csv) file_type="csv" ;;
-            md|markdown) file_type="md" ;;
-            txt) file_type="txt" ;;
-            rst) file_type="rst" ;;
-            tex) file_type="latex" ;;
-            sh) file_type="shell" ;;
-            bash) file_type="bash" ;;
-            bat|cmd) file_type="batch" ;;
-            ps1) file_type="powershell" ;;
-            sql) file_type="sql" ;;
-            graphql|gql) file_type="graphql" ;;
-            *) file_type="unknown" ;;
-        esac
+    echo "$file_type"
+}
+
+# Helper function to identify without using extension
+identify_file_type_without_extension() {
+    local file="$1"
+    local file_type="unknown"
+    
+    # Get a sample of file content
+    local content_sample=$(head -n 50 "$file" 2>/dev/null)
+    
+    # Python detection (strongest indicators first)
+    if grep -q "^import \|^from .* import \|def \|class \|if __name__ == ['\"]__main__['\"]:" <<< "$content_sample"; then
+        file_type="python"
+        
+    # Java detection
+    elif grep -q "public class\|class .* extends\|interface .* \|@Override\|import java\." <<< "$content_sample"; then
+        file_type="java"
+        
+    # C/C++ detection
+    elif grep -q "#include <\|^int main(\|void main(\|struct \|typedef \|#ifndef\|#define\|#pragma once" <<< "$content_sample"; then
+        if grep -q "std::\|namespace\|template <\|class .* {\|vector<" <<< "$content_sample"; then
+            file_type="cpp"
+        else
+            file_type="c"
+        fi
+        
+    # Vue component (must check before generic JS because Vue files contain JS)
+    elif grep -q "<template>\|export default {" <<< "$content_sample" && grep -q "<script>\|<style>" <<< "$content_sample"; then
+        # Detect if Vue component uses TypeScript
+        if grep -q "<script lang=\"ts\">\|<script lang='ts'>" <<< "$content_sample"; then
+            file_type="vue-ts"
+        else
+            file_type="vue-js"
+        fi
+        
+    # React JSX/TSX detection
+    elif grep -q "import React\|React\." <<< "$content_sample" || grep -q "from ['\"]react['\"]" <<< "$content_sample" || grep -q "React\.Component" <<< "$content_sample"; then
+        if grep -q ":\s*\(string\|number\|boolean\|any\|React\.\)\|interface\s\|type\s" <<< "$content_sample"; then
+            file_type="tsx"
+        else
+            file_type="jsx"
+        fi
+        
+    # TypeScript detection
+    elif grep -q "interface \|type \|:\s*\(string\|number\|boolean\|any\)\|class .* implements" <<< "$content_sample"; then
+        file_type="ts"
+        
+    # JavaScript detection
+    elif grep -q "function\|const\|let\|var\|import\|export\|=>\|module\.exports\|require(" <<< "$content_sample"; then
+        file_type="js"
+        
+    # HTML detection
+    elif grep -q "<!DOCTYPE html>\|<html>\|<head>\|<body>\|<div>\|<script>" <<< "$content_sample"; then
+        file_type="html"
+        
+    # CSS detection
+    elif grep -q "{\s*\(color\|background\|font-size\|margin\|padding\)" <<< "$content_sample"; then
+        file_type="css"
+        
+    # Default to text if we couldn't determine
+    else
+        file_type="text"
     fi
     
     echo "$file_type"
@@ -680,15 +584,15 @@ process_file() {
     
     # Skip based on extension or size
     if should_skip_extension "$file" || should_skip_size "$file"; then
-        # Update counter with lock to prevent race conditions
-        flock "$COUNTER_FILE" bash -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""
+        # Update counter with safer approach
+        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
         return
     fi
     
     # Check for project name matches first (high priority)
     if check_project_match "$file"; then
-        # Update counter with lock to prevent race conditions
-        flock "$COUNTER_FILE" bash -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""
+        # Update counter with safer approach
+        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
         return
     fi
     
@@ -704,8 +608,8 @@ process_file() {
         fi
     fi
     
-    # Update counter with lock to prevent race conditions
-    flock "$COUNTER_FILE" bash -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""
+    # Update counter with safer approach
+    { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
 }
 
 # Function to check if a file seems corrupted or incomplete
@@ -748,54 +652,6 @@ is_valid_file() {
     esac
     
     return 0
-}
-
-# Function to detect file signatures and improve naming based on content
-detect_file_signature() {
-    local file="$1"
-    local file_type="$2"
-    local filename=$(basename "$file")
-    local new_filename=""
-    
-    # Try to extract name from package/import statements
-    case "$file_type" in
-        js|ts)
-            # Try to extract component name or main export
-            local component_name=$(grep -o -m 1 "export\s\+default\s\+class\s\+\([A-Za-z0-9_]\+\)" "$file" | sed 's/.*class\s\+\([A-Za-z0-9_]\+\).*/\1/')
-            if [ -z "$component_name" ]; then
-                component_name=$(grep -o -m 1 "export\s\+default\s\+function\s\+\([A-Za-z0-9_]\+\)" "$file" | sed 's/.*function\s\+\([A-Za-z0-9_]\+\).*/\1/')
-            fi
-            if [ -z "$component_name" ]; then
-                component_name=$(grep -o -m 1 "class\s\+\([A-Za-z0-9_]\+\)" "$file" | sed 's/.*class\s\+\([A-Za-z0-9_]\+\).*/\1/')
-            fi
-            if [ -n "$component_name" ]; then
-                new_filename="${component_name}.$file_type"
-            fi
-            ;;
-        vue|vue-js|vue-ts)
-            # Try to extract component name from script section
-            local component_name=$(grep -o -m 1 "name:\s*['\"]\\([A-Za-z0-9_-]\\+\\)['\"]" "$file" | sed "s/.*name:\s*['\"]\\([A-Za-z0-9_-]\\+\\)['\"].*/\\1/")
-            if [ -n "$component_name" ]; then
-                new_filename="${component_name}.vue"
-            fi
-            ;;
-        java|kotlin)
-            # Extract class name
-            local class_name=$(grep -o -m 1 "class\s\+\([A-Za-z0-9_]\+\)" "$file" | sed 's/.*class\s\+\([A-Za-z0-9_]\+\).*/\1/')
-            if [ -n "$class_name" ]; then
-                new_filename="${class_name}.$file_type"
-            fi
-            ;;
-        python)
-            # Try to get module name from imports or class definitions
-            local class_name=$(grep -o -m 1 "class\s\+\([A-Za-z0-9_]\+\)" "$file" | sed 's/.*class\s\+\([A-Za-z0-9_]\+\).*/\1/')
-            if [ -n "$class_name" ]; then
-                new_filename="${class_name}.py"
-            fi
-            ;;
-    esac
-    
-    echo "$new_filename"
 }
 
 # Function to attempt to merge file fragments
@@ -985,43 +841,6 @@ preprocess_photorec_dirs() {
     preprocess_total=$(( preprocess_total + 0 ))  # Ensure it's a number
     echo "Found $preprocess_total files to pre-process"
     
-    # Set up a simple parallel processor with proper integer handling
-    echo "0" > "$COUNTER_FILE"
-    
-    # Start progress display with more robust arithmetic
-    (
-        while true; do
-            # Calculate progress manually with safe integer handling
-            local current=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
-            current=$(( current + 0 ))  # Force to integer
-            
-            # Avoid division by zero
-            if [ "$preprocess_total" -gt 0 ]; then
-                local percentage=$(( current * 100 / preprocess_total ))
-                local bars=$(( percentage / 2 ))
-                
-                # Build progress bar safely
-                local bar=""
-                for ((i=0; i<bars; i++)); do
-                    bar="${bar}#"
-                done
-                
-                printf "\r[Pre-processing] [%-50s] %d%% (%d/%d files)" \
-                    "$bar" "$percentage" "$current" "$preprocess_total"
-            else
-                printf "\r[Pre-processing] No files to process"
-            fi
-            
-            if [ "$current" -ge "$preprocess_total" ]; then
-                echo ""  # Add final newline
-                break
-            fi
-            
-            sleep 0.5
-        done
-    ) &
-    local preprocess_pid=$!
-    
     # Get a human-readable size for display
     if [ "$SKIP_SIZE" -ge $((1024*1024*1024)) ]; then
         HR_SIZE="$((SKIP_SIZE / 1024 / 1024 / 1024))G"
@@ -1044,25 +863,56 @@ preprocess_photorec_dirs() {
         echo "Copying files to categorized directories..."
     fi
     
+    # Set up a counter file for progress
+    echo "0" > "$COUNTER_FILE"
+    
+    # Start progress display in a way that won't error with backslashes
+    (
+        while true; do
+            # Calculate progress manually with safe integer handling
+            local current=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
+            current=$(( current + 0 ))  # Force to integer
+            
+            # Avoid division by zero
+            if [ "$preprocess_total" -gt 0 ]; then
+                local percentage=$(( current * 100 / preprocess_total ))
+                
+                # Use a simpler progress bar that avoids backslash issues
+                printf "\r[Pre-processing] %d%% (%d/%d files)                   " \
+                    "$percentage" "$current" "$preprocess_total"
+            else
+                printf "\r[Pre-processing] No files to process                  "
+            fi
+            
+            if [ "$current" -ge "$preprocess_total" ]; then
+                printf "\r[Pre-processing] 100%% Complete!                       \n"
+                break
+            fi
+            
+            sleep 0.5
+        done
+    ) &
+    local preprocess_pid=$!
+    
     # Process files in parallel with quick classification and size limit
-    # Make sure counter increments are atomic
+    # Using a more robust approach without backreferences in grep
     find "$source_dir" -type f -size -${SKIP_SIZE}c -print | xargs -P "$PARALLEL_JOBS" -I{} bash -c '
         file="$1"
         
-        # Quick file command check
+        # Quick file command check without complex regex
         file_info=$(file -b "$file")
         
-        # Basic categorization
-        if [[ "$file_info" =~ "text" || "$file_info" =~ "script" || "$file_info" =~ "source" ]]; then
+        # Basic categorization with safer pattern matching
+        if echo "$file_info" | grep -q "text\|script\|source"; then
             # Probably code or text
             '"$FILE_OP"' "$file" "'"$target_dir"'/code/$(basename "$file")"
-        elif [[ "$file_info" =~ "image" || "$file_info" =~ "video" || "$file_info" =~ "audio" ]]; then
+        elif echo "$file_info" | grep -q "image\|video\|audio"; then
             # Media file
             '"$FILE_OP"' "$file" "'"$target_dir"'/media/$(basename "$file")"
-        elif [[ "$file_info" =~ "document" || "$file_info" =~ "PDF" ]]; then
+        elif echo "$file_info" | grep -q "document\|PDF"; then
             # Document
             '"$FILE_OP"' "$file" "'"$target_dir"'/docs/$(basename "$file")"
-        elif [[ "$file_info" =~ "archive" || "$file_info" =~ "compressed" ]]; then
+        elif echo "$file_info" | grep -q "archive\|compressed"; then
             # Archive
             '"$FILE_OP"' "$file" "'"$target_dir"'/archives/$(basename "$file")"
         else
@@ -1070,8 +920,8 @@ preprocess_photorec_dirs() {
             '"$FILE_OP"' "$file" "'"$target_dir"'/unknown/$(basename "$file")"
         fi
         
-        # Update counter with lock to prevent race conditions
-        flock "'"$COUNTER_FILE"'" bash -c "current=\$(cat \"'"$COUNTER_FILE"'\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"'"$COUNTER_FILE"'\""
+        # Atomic counter update with proper error redirection
+        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
     ' -- {}
     
     # Kill progress process
@@ -1449,3 +1299,51 @@ fi
 # Export the additional environment variables
 export -f process_file get_extension should_skip_extension should_skip_size is_duplicate check_project_match identify_file_type update_counter detect_file_signature is_valid_file merge_fragments parse_size
 export SOURCE_DIR TARGET_DIR PROJECT_NAMES HASH_DIR COUNTER_FILE SKIP_EXTENSIONS SKIP_SIZE RENAME_FILES INTELLIGENT_NAMING MERGE_FRAGMENTS MOVE_FILES
+
+# Function to detect file signatures and improve naming based on content
+detect_file_signature() {
+    local file="$1"
+    local file_type="$2"
+    local filename=$(basename "$file")
+    local new_filename=""
+    
+    # Try to extract name from package/import statements - using safer grep patterns
+    case "$file_type" in
+        js|ts)
+            # Try to extract component name or main export
+            local component_name=$(grep -m 1 "export.*default.*class" "$file" | grep -o "class [A-Za-z0-9_]*" | sed 's/class //')
+            if [ -z "$component_name" ]; then
+                component_name=$(grep -m 1 "export.*default.*function" "$file" | grep -o "function [A-Za-z0-9_]*" | sed 's/function //')
+            fi
+            if [ -z "$component_name" ]; then
+                component_name=$(grep -m 1 "class [A-Za-z0-9_]" "$file" | grep -o "class [A-Za-z0-9_]*" | sed 's/class //')
+            fi
+            if [ -n "$component_name" ]; then
+                new_filename="${component_name}.$file_type"
+            fi
+            ;;
+        vue|vue-js|vue-ts)
+            # Try to extract component name from script section using grep with safer patterns
+            local component_name=$(grep -m 1 "name:" "$file" | grep -o "name:.*['\"]\w*['\"]" | sed "s/name:[ ]*['\"]//g" | sed "s/['\"]//g")
+            if [ -n "$component_name" ]; then
+                new_filename="${component_name}.vue"
+            fi
+            ;;
+        java|kotlin)
+            # Extract class name with safer grep patterns
+            local class_name=$(grep -m 1 "class " "$file" | grep -o "class [A-Za-z0-9_]*" | sed 's/class //')
+            if [ -n "$class_name" ]; then
+                new_filename="${class_name}.$file_type"
+            fi
+            ;;
+        python)
+            # Try to get module name from imports or class definitions
+            local class_name=$(grep -m 1 "class " "$file" | grep -o "class [A-Za-z0-9_]*" | sed 's/class //')
+            if [ -n "$class_name" ]; then
+                new_filename="${class_name}.py"
+            fi
+            ;;
+    esac
+    
+    echo "$new_filename"
+}
