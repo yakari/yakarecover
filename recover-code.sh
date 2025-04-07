@@ -21,8 +21,15 @@ cleanup() {
     fi
     
     # Reset terminal
-    echo -e "\033[?25h"  # Show cursor
+    tput cnorm     # Show cursor 
+    tput sgr0      # Reset all attributes
+    echo -e "\033[?25h"  # Show cursor (alternative method)
     echo -e "\033[0m"    # Reset terminal colors
+    
+    # Move to bottom of screen to ensure prompt is at a clean position
+    tput cup $(tput lines) 0
+    tput el
+    tput cuu1
 }
 
 # Default options
@@ -357,32 +364,44 @@ display_progress() {
     local current=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
     current=$(( current + 0 ))  # Force to integer
     
-    # Only update progress display if percentage changed
+    # Calculate percentage
     local percentage=0
     if [ "$TOTAL_FILES" -gt 0 ]; then
         percentage=$(( current * 100 / TOTAL_FILES ))
     fi
     
-    local last_percentage=$(cat "$PROGRESS_FILE" 2>/dev/null || echo "0")
-    last_percentage=$(( last_percentage + 0 ))  # Force to integer
-    
-    # Always update to ensure consistent display
+    # Save current percentage
     echo "$percentage" > "$PROGRESS_FILE"
     
-    # Simple progress display without complex bar that could cause backslash issues
-    printf "\r\033[KProgress: %d%% (%d/%d files)                          " \
-           "$percentage" "$current" "$TOTAL_FILES"
+    # Save cursor position, move to bottom line, clear line, display progress
+    tput sc                # Save cursor position
+    tput cup $(tput lines) 0  # Move cursor to bottom of screen
+    tput el                # Clear line
     
-    # Show cursor again if progress is complete
+    # Display progress with consistent formatting
+    printf "[Progress] %d%% (%d/%d files)" "$percentage" "$current" "$TOTAL_FILES"
+    
+    # Return to original cursor position
+    tput rc                # Restore cursor position
+    
+    # If complete, move to bottom, clear line, show final message and move back up
     if [ "$percentage" -eq 100 ]; then
-        printf "\r\033[KProgress: 100%% Complete!                         \n"
-        echo -ne "\033[?25h"  # Show cursor
+        tput cup $(tput lines) 0  # Move to bottom
+        tput el                # Clear line
+        printf "[Progress] 100%% Complete!   "
+        tput cuu1              # Move up one line
+        echo -ne "\033[?25h"   # Show cursor
     fi
 }
 
 # Function to check if file matches project names
 check_project_match() {
     local file="$1"
+    
+    # Skip if file doesn't exist
+    if [ ! -f "$file" ]; then
+        return 1
+    }
     
     if [ -z "$PROJECT_NAMES" ]; then
         return 1  # No project names specified
@@ -391,11 +410,17 @@ check_project_match() {
     IFS=',' read -ra PROJECTS <<< "$PROJECT_NAMES"
     for project in "${PROJECTS[@]}"; do
         if grep_check "$file" "$project"; then
+            # Create project directory if it doesn't exist
+            mkdir -p "$TARGET_DIR/$project"
+            
             if ! is_duplicate "$file" "$project"; then
                 if [ "$MOVE_FILES" = true ]; then
-                    mv "$file" "$TARGET_DIR/$project/$(basename "$file")"
+                    mv "$file" "$TARGET_DIR/$project/$(basename "$file")" 2>/dev/null || 
+                        cp "$file" "$TARGET_DIR/$project/$(basename "$file")" 2>/dev/null || 
+                        echo "Warning: Could not move file $file to project $project" >&2
                 else
-                    cp "$file" "$TARGET_DIR/$project/$(basename "$file")"
+                    cp "$file" "$TARGET_DIR/$project/$(basename "$file")" 2>/dev/null || 
+                        echo "Warning: Could not copy file $file to project $project" >&2
                 fi
             fi
             return 0  # Matched a project
@@ -582,6 +607,13 @@ identify_file_type_without_extension() {
 process_file() {
     local file="$1"
     
+    # First check if file exists
+    if [ ! -f "$file" ]; then
+        # Silently skip missing files and update counter
+        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
+        return
+    }
+    
     # Skip based on extension or size
     if should_skip_extension "$file" || should_skip_size "$file"; then
         # Update counter with safer approach
@@ -599,12 +631,18 @@ process_file() {
     # Identify file type
     local file_type=$(identify_file_type "$file")
     
+    # Make sure target directory exists
+    mkdir -p "$TARGET_DIR/$file_type"
+    
     # Copy/move file to appropriate directory if not a duplicate
     if ! is_duplicate "$file" "$file_type"; then
         if [ "$MOVE_FILES" = true ]; then
-            mv "$file" "$TARGET_DIR/$file_type/$(basename "$file")"
+            mv "$file" "$TARGET_DIR/$file_type/$(basename "$file")" 2>/dev/null || 
+                cp "$file" "$TARGET_DIR/$file_type/$(basename "$file")" 2>/dev/null || 
+                echo "Warning: Could not process file $file" >&2
         else
-            cp "$file" "$TARGET_DIR/$file_type/$(basename "$file")"
+            cp "$file" "$TARGET_DIR/$file_type/$(basename "$file")" 2>/dev/null || 
+                echo "Warning: Could not copy file $file" >&2
         fi
     fi
     
@@ -866,7 +904,7 @@ preprocess_photorec_dirs() {
     # Set up a counter file for progress
     echo "0" > "$COUNTER_FILE"
     
-    # Start progress display in a way that won't error with backslashes
+    # Start progress display with persistent positioning
     (
         while true; do
             # Calculate progress manually with safe integer handling
@@ -877,15 +915,26 @@ preprocess_photorec_dirs() {
             if [ "$preprocess_total" -gt 0 ]; then
                 local percentage=$(( current * 100 / preprocess_total ))
                 
-                # Use a simpler progress bar that avoids backslash issues
-                printf "\r[Pre-processing] %d%% (%d/%d files)                   " \
+                # Position at bottom of screen for persistent display
+                tput sc                # Save cursor position
+                tput cup $(tput lines) 0  # Move cursor to bottom of screen
+                tput el                # Clear line
+                
+                # Display progress
+                printf "[Pre-processing] %d%% (%d/%d files)" \
                     "$percentage" "$current" "$preprocess_total"
-            else
-                printf "\r[Pre-processing] No files to process                  "
+                
+                # Return to original position
+                tput rc                # Restore cursor position
             fi
             
             if [ "$current" -ge "$preprocess_total" ]; then
-                printf "\r[Pre-processing] 100%% Complete!                       \n"
+                # Final progress display
+                tput sc
+                tput cup $(tput lines) 0
+                tput el
+                printf "[Pre-processing] 100%% Complete!"
+                tput rc
                 break
             fi
             
@@ -928,6 +977,10 @@ preprocess_photorec_dirs() {
     kill $preprocess_pid 2>/dev/null
     wait $preprocess_pid 2>/dev/null
     
+    # Move cursor to bottom and back up one line for clean output
+    tput cup $(tput lines) 0
+    tput el
+    tput cuu1
     echo "Pre-processing complete!"
     
     # Count the categorized files - with safe integer handling
@@ -1012,6 +1065,8 @@ echo "Processing files with $PARALLEL_JOBS parallel jobs..."
 echo "Preparing file list with pre-filtering..."
 FILELIST="$TEMP_DIR/filelist.txt"
 
+touch "$FILELIST"  # Ensure the file exists even if no files found
+
 # Pre-filter to exclude binary files and files larger than size limit
 # Build a list of extension patterns to skip
 SKIP_PATTERN=""
@@ -1024,12 +1079,17 @@ for skip_ext in "${SKIP_EXTS[@]}"; do
     fi
 done
 
+# Find files and check that they exist before adding to the list
 if [ -n "$SKIP_PATTERN" ]; then
     # Use find and grep to exclude known binary extensions and large files
-    find "$SOURCE_DIR" -type f -size -${SKIP_SIZE}c | grep -v -E "$SKIP_PATTERN" > "$FILELIST"
+    find "$SOURCE_DIR" -type f -size -${SKIP_SIZE}c 2>/dev/null | grep -v -E "$SKIP_PATTERN" | while read -r f; do
+        if [ -f "$f" ]; then echo "$f" >> "$FILELIST"; fi
+    done
 else
     # Just filter by size if no extensions to skip
-    find "$SOURCE_DIR" -type f -size -${SKIP_SIZE}c > "$FILELIST"
+    find "$SOURCE_DIR" -type f -size -${SKIP_SIZE}c 2>/dev/null | while read -r f; do
+        if [ -f "$f" ]; then echo "$f" >> "$FILELIST"; fi
+    done
 fi
 
 # Update the total file count after pre-filtering
@@ -1245,7 +1305,12 @@ if [ "$INTELLIGENT_NAMING" = true ]; then
     for dir in "$TARGET_DIR"/*; do
         if [ -d "$dir" ]; then
             dir_name=$(basename "$dir")
-            find "$dir" -type f | while read -r file; do
+            find "$dir" -type f 2>/dev/null | while read -r file; do
+                # Skip if file doesn't exist (it might have been moved)
+                if [ ! -f "$file" ]; then
+                    continue
+                fi
+                
                 # Try to detect a better name based on content
                 new_name=$(detect_file_signature "$file" "$dir_name")
                 
@@ -1260,8 +1325,7 @@ if [ "$INTELLIGENT_NAMING" = true ]; then
                     fi
                     
                     # Rename the file with the detected name
-                    mv "$file" "$dir/$new_name"
-                    echo "Renamed: $(basename "$file") -> $new_name"
+                    mv "$file" "$dir/$new_name" 2>/dev/null && echo "Renamed: $(basename "$file") -> $new_name"
                 fi
             done
         fi
@@ -1296,16 +1360,17 @@ if [ "$MERGE_FRAGMENTS" = true ]; then
     echo "File validation and fragment merging completed!"
 fi
 
-# Export the additional environment variables
-export -f process_file get_extension should_skip_extension should_skip_size is_duplicate check_project_match identify_file_type update_counter detect_file_signature is_valid_file merge_fragments parse_size
-export SOURCE_DIR TARGET_DIR PROJECT_NAMES HASH_DIR COUNTER_FILE SKIP_EXTENSIONS SKIP_SIZE RENAME_FILES INTELLIGENT_NAMING MERGE_FRAGMENTS MOVE_FILES
-
-# Function to detect file signatures and improve naming based on content
+# Move the detect_file_signature function before the EXPORT line
 detect_file_signature() {
     local file="$1"
     local file_type="$2"
     local filename=$(basename "$file")
     local new_filename=""
+    
+    # Skip if file doesn't exist
+    if [ ! -f "$file" ]; then
+        return
+    }
     
     # Try to extract name from package/import statements - using safer grep patterns
     case "$file_type" in
@@ -1347,3 +1412,9 @@ detect_file_signature() {
     
     echo "$new_filename"
 }
+
+# Update the export line to ensure detect_file_signature is properly exported
+export -f process_file get_extension should_skip_extension should_skip_size is_duplicate check_project_match identify_file_type update_counter is_valid_file merge_fragments parse_size detect_file_signature
+
+# Export the additional environment variables
+export SOURCE_DIR TARGET_DIR PROJECT_NAMES HASH_DIR COUNTER_FILE SKIP_EXTENSIONS SKIP_SIZE RENAME_FILES INTELLIGENT_NAMING MERGE_FRAGMENTS MOVE_FILES
