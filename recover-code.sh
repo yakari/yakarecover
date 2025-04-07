@@ -401,7 +401,7 @@ check_project_match() {
     # Skip if file doesn't exist
     if [ ! -f "$file" ]; then
         return 1
-    }
+    fi
     
     if [ -z "$PROJECT_NAMES" ]; then
         return 1  # No project names specified
@@ -612,7 +612,7 @@ process_file() {
         # Silently skip missing files and update counter
         { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
         return
-    }
+    fi
     
     # Skip based on extension or size
     if should_skip_extension "$file" || should_skip_size "$file"; then
@@ -1370,7 +1370,7 @@ detect_file_signature() {
     # Skip if file doesn't exist
     if [ ! -f "$file" ]; then
         return
-    }
+    fi
     
     # Try to extract name from package/import statements - using safer grep patterns
     case "$file_type" in
