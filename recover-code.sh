@@ -354,11 +354,18 @@ update_counter() {
 
 # Function to display progress bar
 display_progress() {
-    local current=$(cat "$COUNTER_FILE")
-    local percentage=$((current * 100 / TOTAL_FILES))
+    local current=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
+    current=$(( current + 0 ))  # Force to integer
     
     # Only update progress display if percentage changed
-    local last_percentage=$(cat "$PROGRESS_FILE")
+    local percentage=0
+    if [ "$TOTAL_FILES" -gt 0 ]; then
+        percentage=$(( current * 100 / TOTAL_FILES ))
+    fi
+    
+    local last_percentage=$(cat "$PROGRESS_FILE" 2>/dev/null || echo "0")
+    last_percentage=$(( last_percentage + 0 ))  # Force to integer
+    
     if [ "$percentage" -ne "$last_percentage" ]; then
         echo "$percentage" > "$PROGRESS_FILE"
         
@@ -370,8 +377,8 @@ display_progress() {
         
         # Print progress bar
         local bar_size=50
-        local filled=$((percentage * bar_size / 100))
-        local empty=$((bar_size - filled))
+        local filled=$(( percentage * bar_size / 100 ))
+        local empty=$(( bar_size - filled ))
         
         printf "Progress: ["
         printf "%${filled}s" | tr ' ' '#'
@@ -673,13 +680,15 @@ process_file() {
     
     # Skip based on extension or size
     if should_skip_extension "$file" || should_skip_size "$file"; then
-        update_counter
+        # Update counter with lock to prevent race conditions
+        flock "$COUNTER_FILE" bash -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""
         return
     fi
     
     # Check for project name matches first (high priority)
     if check_project_match "$file"; then
-        update_counter
+        # Update counter with lock to prevent race conditions
+        flock "$COUNTER_FILE" bash -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""
         return
     fi
     
@@ -695,7 +704,8 @@ process_file() {
         fi
     fi
     
-    update_counter
+    # Update counter with lock to prevent race conditions
+    flock "$COUNTER_FILE" bash -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""
 }
 
 # Function to check if a file seems corrupted or incomplete
@@ -972,22 +982,35 @@ preprocess_photorec_dirs() {
     # Count files in source directory for progress tracking
     echo "Counting files in source directory..."
     local preprocess_total=$(find "$source_dir" -type f -size -${SKIP_SIZE}c -print | wc -l)
+    preprocess_total=$(( preprocess_total + 0 ))  # Ensure it's a number
     echo "Found $preprocess_total files to pre-process"
     
-    # Set up a simple parallel processor
+    # Set up a simple parallel processor with proper integer handling
     echo "0" > "$COUNTER_FILE"
     
-    # Start progress display
+    # Start progress display with more robust arithmetic
     (
         while true; do
-            # Calculate progress manually
-            local current=$(cat "$COUNTER_FILE")
-            local percentage=$((current * 100 / preprocess_total))
+            # Calculate progress manually with safe integer handling
+            local current=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
+            current=$(( current + 0 ))  # Force to integer
             
-            # Only update if percentage changed
-            printf "\r[Pre-processing] [%-50s] %d%% (%d/%d files)" \
-                "$(printf '#%.0s' $(seq 1 $((percentage / 2))))" \
-                "$percentage" "$current" "$preprocess_total"
+            # Avoid division by zero
+            if [ "$preprocess_total" -gt 0 ]; then
+                local percentage=$(( current * 100 / preprocess_total ))
+                local bars=$(( percentage / 2 ))
+                
+                # Build progress bar safely
+                local bar=""
+                for ((i=0; i<bars; i++)); do
+                    bar="${bar}#"
+                done
+                
+                printf "\r[Pre-processing] [%-50s] %d%% (%d/%d files)" \
+                    "$bar" "$percentage" "$current" "$preprocess_total"
+            else
+                printf "\r[Pre-processing] No files to process"
+            fi
             
             if [ "$current" -ge "$preprocess_total" ]; then
                 echo ""  # Add final newline
@@ -1022,6 +1045,7 @@ preprocess_photorec_dirs() {
     fi
     
     # Process files in parallel with quick classification and size limit
+    # Make sure counter increments are atomic
     find "$source_dir" -type f -size -${SKIP_SIZE}c -print | xargs -P "$PARALLEL_JOBS" -I{} bash -c '
         file="$1"
         
@@ -1046,9 +1070,8 @@ preprocess_photorec_dirs() {
             '"$FILE_OP"' "$file" "'"$target_dir"'/unknown/$(basename "$file")"
         fi
         
-        # Update counter
-        current=$(cat "'"$COUNTER_FILE"'")
-        echo $((current + 1)) > "'"$COUNTER_FILE"'"
+        # Update counter with lock to prevent race conditions
+        flock "'"$COUNTER_FILE"'" bash -c "current=\$(cat \"'"$COUNTER_FILE"'\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"'"$COUNTER_FILE"'\""
     ' -- {}
     
     # Kill progress process
@@ -1057,12 +1080,19 @@ preprocess_photorec_dirs() {
     
     echo "Pre-processing complete!"
     
-    # Count the categorized files
-    local code_files=$(find "$target_dir/code" -type f | wc -l)
-    local media_files=$(find "$target_dir/media" -type f | wc -l)
-    local doc_files=$(find "$target_dir/docs" -type f | wc -l)
-    local archive_files=$(find "$target_dir/archives" -type f | wc -l)
-    local unknown_files=$(find "$target_dir/unknown" -type f | wc -l)
+    # Count the categorized files - with safe integer handling
+    local code_files=$(find "$target_dir/code" -type f 2>/dev/null | wc -l)
+    local media_files=$(find "$target_dir/media" -type f 2>/dev/null | wc -l)
+    local doc_files=$(find "$target_dir/docs" -type f 2>/dev/null | wc -l)
+    local archive_files=$(find "$target_dir/archives" -type f 2>/dev/null | wc -l)
+    local unknown_files=$(find "$target_dir/unknown" -type f 2>/dev/null | wc -l)
+    
+    # Force to integers
+    code_files=$(( code_files + 0 ))
+    media_files=$(( media_files + 0 ))
+    doc_files=$(( doc_files + 0 ))
+    archive_files=$(( archive_files + 0 ))
+    unknown_files=$(( unknown_files + 0 ))
     
     echo "Categorized files:"
     echo "- Code files: $code_files"
