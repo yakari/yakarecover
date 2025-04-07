@@ -362,11 +362,12 @@ update_counter() {
 # Function to display progress bar
 display_progress() {
     local current=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
+    current=${current:-0}  # Default to 0 if empty
     current=$(( current + 0 ))  # Force to integer
     
     # Calculate percentage
     local percentage=0
-    if [ "$TOTAL_FILES" -gt 0 ]; then
+    if [ "${TOTAL_FILES:-0}" -gt 0 ]; then
         percentage=$(( current * 100 / TOTAL_FILES ))
     fi
     
@@ -379,7 +380,7 @@ display_progress() {
     tput el                # Clear line
     
     # Display progress with consistent formatting
-    printf "[Progress] %d%% (%d/%d files)" "$percentage" "$current" "$TOTAL_FILES"
+    printf "[Progress] %d%% (%d/%d files)" "$percentage" "$current" "${TOTAL_FILES:-0}"
     
     # Return to original cursor position
     tput rc                # Restore cursor position
@@ -455,23 +456,23 @@ identify_file_type() {
         
         # Check for specific file signatures in content, from most specific to most general
         
-        # Python detection
-        if grep -q "^import \|^from .* import \|def \|class \|if __name__ == ['\"]__main__['\"]:" <<< "$content_sample"; then
+        # Python detection - fixed pattern
+        if grep -q "^import \|^from .* import \|def \|class \|if __name__ ==" <<< "$content_sample"; then
             file_type="python"
             
-        # Java detection
+        # Java detection - fixed pattern
         elif grep -q "public class\|class .* extends\|interface .* \|@Override\|import java\." <<< "$content_sample"; then
             file_type="java"
             
-        # C/C++ detection
-        elif grep -q "#include <\|^int main(\|void main(\|struct \|typedef \|#ifndef\|#define\|#pragma once" <<< "$content_sample"; then
+        # C/C++ detection - fixed pattern
+        elif grep -q "#include <\|^int main\|void main\|struct \|typedef \|#ifndef\|#define\|#pragma once" <<< "$content_sample"; then
             if grep -q "std::\|namespace\|template <\|class .* {\|vector<" <<< "$content_sample"; then
                 file_type="cpp"
             else
                 file_type="c"
             fi
             
-        # Vue component (must check before generic JS because Vue files contain JS)
+        # Vue component - fixed pattern
         elif grep -q "<template>\|export default {" <<< "$content_sample" && grep -q "<script>\|<style>" <<< "$content_sample"; then
             # Detect if Vue component uses TypeScript
             if grep -q "<script lang=\"ts\">\|<script lang='ts'>" <<< "$content_sample"; then
@@ -480,28 +481,28 @@ identify_file_type() {
                 file_type="vue-js"
             fi
             
-        # React JSX/TSX detection (enhanced)
-        elif grep -q "import React\|React\." <<< "$content_sample" || grep -q "from ['\"]react['\"]" <<< "$content_sample" || grep -q "React\.Component" <<< "$content_sample" || grep -q "useState\|useEffect\|useContext" <<< "$content_sample"; then
-            if grep -q ":\s*\(string\|number\|boolean\|any\|React\.\)\|interface\s\|type\s" <<< "$content_sample" || grep -q "<.*>\(" <<< "$content_sample"; then
+        # React JSX/TSX detection - fixed pattern
+        elif grep -q "import React\|React\." <<< "$content_sample" || grep -q "from ['\"]react['\"]" <<< "$content_sample" || grep -q "React\.Component" <<< "$content_sample"; then
+            if grep -q ":\s*string\|:\s*number\|:\s*boolean\|:\s*any\|:\s*React\.\|interface\s\|type\s" <<< "$content_sample" || grep -q "<.*>" <<< "$content_sample"; then
                 file_type="tsx"
             else
                 file_type="jsx"
             fi
             
-        # TypeScript detection
-        elif grep -q "interface \|type \|:\s*\(string\|number\|boolean\|any\)\|class .* implements" <<< "$content_sample"; then
+        # TypeScript detection - fixed pattern
+        elif grep -q "interface \|type \|:\s*string\|:\s*number\|:\s*boolean\|:\s*any\|class .* implements" <<< "$content_sample"; then
             file_type="ts"
             
-        # JavaScript detection
-        elif grep -q "function\|const\|let\|var\|import\|export\|=>\|module\.exports\|require(" <<< "$content_sample"; then
+        # JavaScript detection - fixed pattern
+        elif grep -q "function\|const\|let\|var\|import\|export\|=>\|module\.exports\|require" <<< "$content_sample"; then
             file_type="js"
             
-        # HTML detection
+        # HTML detection - fixed pattern
         elif grep -q "<!DOCTYPE html>\|<html>\|<head>\|<body>\|<div>\|<script>" <<< "$content_sample"; then
             file_type="html"
             
-        # CSS detection
-        elif grep -q "{\s*\(color\|background\|font-size\|margin\|padding\)" <<< "$content_sample"; then
+        # CSS detection - fixed pattern
+        elif grep -q "{" <<< "$content_sample" && grep -q "color:\|background:\|font-size:\|margin:\|padding:" <<< "$content_sample"; then
             file_type="css"
             
         # Default to text if we couldn't determine
@@ -524,7 +525,7 @@ identify_file_type() {
         
         # Verify TypeScript files
         if [ "$file_type" = "ts" ] || [ "$file_type" = "tsx" ]; then
-            if ! grep -q ":\s*\(string\|number\|boolean\|any\)\|interface\s\|type\s" "$file"; then
+            if ! grep -q ":\s*string\|:\s*number\|:\s*boolean\|:\s*any\|interface\s\|type\s" "$file"; then
                 # This might not be TypeScript, reclassify
                 if [ "$file_type" = "tsx" ]; then
                     file_type="jsx"
@@ -546,23 +547,23 @@ identify_file_type_without_extension() {
     # Get a sample of file content
     local content_sample=$(head -n 50 "$file" 2>/dev/null)
     
-    # Python detection (strongest indicators first)
-    if grep -q "^import \|^from .* import \|def \|class \|if __name__ == ['\"]__main__['\"]:" <<< "$content_sample"; then
+    # Python detection - fixed pattern
+    if grep -q "^import \|^from .* import \|def \|class \|if __name__ ==" <<< "$content_sample"; then
         file_type="python"
         
-    # Java detection
+    # Java detection - fixed pattern
     elif grep -q "public class\|class .* extends\|interface .* \|@Override\|import java\." <<< "$content_sample"; then
         file_type="java"
         
-    # C/C++ detection
-    elif grep -q "#include <\|^int main(\|void main(\|struct \|typedef \|#ifndef\|#define\|#pragma once" <<< "$content_sample"; then
+    # C/C++ detection - fixed pattern
+    elif grep -q "#include <\|^int main\|void main\|struct \|typedef \|#ifndef\|#define\|#pragma once" <<< "$content_sample"; then
         if grep -q "std::\|namespace\|template <\|class .* {\|vector<" <<< "$content_sample"; then
             file_type="cpp"
         else
             file_type="c"
         fi
         
-    # Vue component (must check before generic JS because Vue files contain JS)
+    # Vue component - fixed pattern
     elif grep -q "<template>\|export default {" <<< "$content_sample" && grep -q "<script>\|<style>" <<< "$content_sample"; then
         # Detect if Vue component uses TypeScript
         if grep -q "<script lang=\"ts\">\|<script lang='ts'>" <<< "$content_sample"; then
@@ -571,28 +572,28 @@ identify_file_type_without_extension() {
             file_type="vue-js"
         fi
         
-    # React JSX/TSX detection
+    # React JSX/TSX detection - fixed pattern
     elif grep -q "import React\|React\." <<< "$content_sample" || grep -q "from ['\"]react['\"]" <<< "$content_sample" || grep -q "React\.Component" <<< "$content_sample"; then
-        if grep -q ":\s*\(string\|number\|boolean\|any\|React\.\)\|interface\s\|type\s" <<< "$content_sample"; then
+        if grep -q ":\s*string\|:\s*number\|:\s*boolean\|:\s*any\|:\s*React\.\|interface\s\|type\s" <<< "$content_sample"; then
             file_type="tsx"
         else
             file_type="jsx"
         fi
         
-    # TypeScript detection
-    elif grep -q "interface \|type \|:\s*\(string\|number\|boolean\|any\)\|class .* implements" <<< "$content_sample"; then
+    # TypeScript detection - fixed pattern
+    elif grep -q "interface \|type \|:\s*string\|:\s*number\|:\s*boolean\|:\s*any\|class .* implements" <<< "$content_sample"; then
         file_type="ts"
         
-    # JavaScript detection
-    elif grep -q "function\|const\|let\|var\|import\|export\|=>\|module\.exports\|require(" <<< "$content_sample"; then
+    # JavaScript detection - fixed pattern
+    elif grep -q "function\|const\|let\|var\|import\|export\|=>\|module\.exports\|require" <<< "$content_sample"; then
         file_type="js"
         
-    # HTML detection
+    # HTML detection - fixed pattern
     elif grep -q "<!DOCTYPE html>\|<html>\|<head>\|<body>\|<div>\|<script>" <<< "$content_sample"; then
         file_type="html"
         
-    # CSS detection
-    elif grep -q "{\s*\(color\|background\|font-size\|margin\|padding\)" <<< "$content_sample"; then
+    # CSS detection - fixed pattern
+    elif grep -q "{" <<< "$content_sample" && grep -q "color:\|background:\|font-size:\|margin:\|padding:" <<< "$content_sample"; then
         file_type="css"
         
     # Default to text if we couldn't determine
@@ -610,21 +611,21 @@ process_file() {
     # First check if file exists
     if [ ! -f "$file" ]; then
         # Silently skip missing files and update counter
-        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
+        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); current=\${current:-0}; echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
         return
     fi
     
     # Skip based on extension or size
     if should_skip_extension "$file" || should_skip_size "$file"; then
         # Update counter with safer approach
-        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
+        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); current=\${current:-0}; echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
         return
     fi
     
     # Check for project name matches first (high priority)
     if check_project_match "$file"; then
         # Update counter with safer approach
-        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
+        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); current=\${current:-0}; echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
         return
     fi
     
@@ -647,7 +648,7 @@ process_file() {
     fi
     
     # Update counter with safer approach
-    { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
+    { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); current=\${current:-0}; echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
 }
 
 # Function to check if a file seems corrupted or incomplete
@@ -876,18 +877,19 @@ preprocess_photorec_dirs() {
     # Count files in source directory for progress tracking
     echo "Counting files in source directory..."
     local preprocess_total=$(find "$source_dir" -type f -size -${SKIP_SIZE}c -print | wc -l)
+    preprocess_total=${preprocess_total:-0}  # Default to 0 if empty
     preprocess_total=$(( preprocess_total + 0 ))  # Ensure it's a number
     echo "Found $preprocess_total files to pre-process"
     
     # Get a human-readable size for display
-    if [ "$SKIP_SIZE" -ge $((1024*1024*1024)) ]; then
+    if [ "${SKIP_SIZE:-0}" -ge $((1024*1024*1024)) ]; then
         HR_SIZE="$((SKIP_SIZE / 1024 / 1024 / 1024))G"
-    elif [ "$SKIP_SIZE" -ge $((1024*1024)) ]; then
+    elif [ "${SKIP_SIZE:-0}" -ge $((1024*1024)) ]; then
         HR_SIZE="$((SKIP_SIZE / 1024 / 1024))M"
-    elif [ "$SKIP_SIZE" -ge 1024 ]; then
+    elif [ "${SKIP_SIZE:-0}" -ge 1024 ]; then
         HR_SIZE="$((SKIP_SIZE / 1024))K"
     else
-        HR_SIZE="${SKIP_SIZE}B"
+        HR_SIZE="${SKIP_SIZE:-0}B"
     fi
     
     echo "Processing files under ${HR_SIZE} in size..."
@@ -909,10 +911,11 @@ preprocess_photorec_dirs() {
         while true; do
             # Calculate progress manually with safe integer handling
             local current=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
+            current=${current:-0}  # Default to 0 if empty
             current=$(( current + 0 ))  # Force to integer
             
             # Avoid division by zero
-            if [ "$preprocess_total" -gt 0 ]; then
+            if [ "${preprocess_total:-0}" -gt 0 ]; then
                 local percentage=$(( current * 100 / preprocess_total ))
                 
                 # Position at bottom of screen for persistent display
@@ -928,7 +931,7 @@ preprocess_photorec_dirs() {
                 tput rc                # Restore cursor position
             fi
             
-            if [ "$current" -ge "$preprocess_total" ]; then
+            if [ "${current:-0}" -ge "${preprocess_total:-0}" ]; then
                 # Final progress display
                 tput sc
                 tput cup $(tput lines) 0
@@ -945,13 +948,13 @@ preprocess_photorec_dirs() {
     
     # Process files in parallel with quick classification and size limit
     # Using a more robust approach without backreferences in grep
-    find "$source_dir" -type f -size -${SKIP_SIZE}c -print | xargs -P "$PARALLEL_JOBS" -I{} bash -c '
+    find "$source_dir" -type f -size -${SKIP_SIZE}c -print | xargs -P "${PARALLEL_JOBS:-4}" -I{} bash -c '
         file="$1"
         
         # Quick file command check without complex regex
         file_info=$(file -b "$file")
         
-        # Basic categorization with safer pattern matching
+        # Basic categorization with simpler patterns
         if echo "$file_info" | grep -q "text\|script\|source"; then
             # Probably code or text
             '"$FILE_OP"' "$file" "'"$target_dir"'/code/$(basename "$file")"
@@ -970,7 +973,7 @@ preprocess_photorec_dirs() {
         fi
         
         # Atomic counter update with proper error redirection
-        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
+        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); current=\${current:-0}; echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
     ' -- {}
     
     # Kill progress process
@@ -991,6 +994,11 @@ preprocess_photorec_dirs() {
     local unknown_files=$(find "$target_dir/unknown" -type f 2>/dev/null | wc -l)
     
     # Force to integers
+    code_files=${code_files:-0}  # Default to 0 if empty
+    media_files=${media_files:-0}
+    doc_files=${doc_files:-0}
+    archive_files=${archive_files:-0}
+    unknown_files=${unknown_files:-0}
     code_files=$(( code_files + 0 ))
     media_files=$(( media_files + 0 ))
     doc_files=$(( doc_files + 0 ))
@@ -1105,7 +1113,14 @@ export TOTAL_FILES
         sleep 0.2
         
         # Check if processing is complete
-        if [ "$(cat "$COUNTER_FILE")" -ge "$TOTAL_FILES" ]; then
+        current=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
+        current=${current:-0}  # Default to 0 if empty
+        current=$(( current + 0 ))  # Force to integer
+        
+        total=${TOTAL_FILES:-0}  # Default to 0 if empty
+        total=$(( total + 0 ))  # Force to integer
+        
+        if [ "$current" -ge "$total" ]; then
             display_progress
             break
         fi
@@ -1375,7 +1390,7 @@ detect_file_signature() {
     # Try to extract name from package/import statements - using safer grep patterns
     case "$file_type" in
         js|ts)
-            # Try to extract component name or main export
+            # Try to extract component name or main export with simpler patterns
             local component_name=$(grep -m 1 "export.*default.*class" "$file" | grep -o "class [A-Za-z0-9_]*" | sed 's/class //')
             if [ -z "$component_name" ]; then
                 component_name=$(grep -m 1 "export.*default.*function" "$file" | grep -o "function [A-Za-z0-9_]*" | sed 's/function //')
@@ -1388,21 +1403,21 @@ detect_file_signature() {
             fi
             ;;
         vue|vue-js|vue-ts)
-            # Try to extract component name from script section using grep with safer patterns
-            local component_name=$(grep -m 1 "name:" "$file" | grep -o "name:.*['\"]\w*['\"]" | sed "s/name:[ ]*['\"]//g" | sed "s/['\"]//g")
+            # Try to extract component name with simpler patterns
+            local component_name=$(grep -m 1 "name:" "$file" | grep -o "name:.*" | sed "s/name://g" | sed "s/['\"]//g" | sed "s/^ *//g" | sed "s/,.*//g")
             if [ -n "$component_name" ]; then
                 new_filename="${component_name}.vue"
             fi
             ;;
         java|kotlin)
-            # Extract class name with safer grep patterns
+            # Extract class name with simpler patterns
             local class_name=$(grep -m 1 "class " "$file" | grep -o "class [A-Za-z0-9_]*" | sed 's/class //')
             if [ -n "$class_name" ]; then
                 new_filename="${class_name}.$file_type"
             fi
             ;;
         python)
-            # Try to get module name from imports or class definitions
+            # Try to get module name with simpler patterns
             local class_name=$(grep -m 1 "class " "$file" | grep -o "class [A-Za-z0-9_]*" | sed 's/class //')
             if [ -n "$class_name" ]; then
                 new_filename="${class_name}.py"
