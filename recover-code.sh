@@ -642,18 +642,31 @@ process_file() {
     # Identify file type
     local file_type=$(identify_file_type "$file")
     
+    # Check again if file exists - it might have been moved by another process
+    if [ ! -f "$file" ]; then
+        # Silently skip missing files and update counter
+        { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); current=\${current:-0}; echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
+        return
+    fi
+    
     # Make sure target directory exists
     mkdir -p "$TARGET_DIR/$file_type"
     
     # Copy/move file to appropriate directory if not a duplicate
     if ! is_duplicate "$file" "$file_type"; then
+        # Check once more before copying/moving - file may have been processed by another thread
+        if [ ! -f "$file" ]; then
+            # Silently skip and update counter
+            { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); current=\${current:-0}; echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
+            return
+        fi
+        
         if [ "$MOVE_FILES" = true ]; then
-            mv "$file" "$TARGET_DIR/$file_type/$(basename "$file")" 2>/dev/null || 
-                cp "$file" "$TARGET_DIR/$file_type/$(basename "$file")" 2>/dev/null || 
-                echo "Warning: Could not process file $file" >&2
+            # When moving files, just silently continue if the file is already gone
+            mv "$file" "$TARGET_DIR/$file_type/$(basename "$file")" 2>/dev/null || true
         else
-            cp "$file" "$TARGET_DIR/$file_type/$(basename "$file")" 2>/dev/null || 
-                echo "Warning: Could not copy file $file" >&2
+            # When copying, the original should still be there
+            cp "$file" "$TARGET_DIR/$file_type/$(basename "$file")" 2>/dev/null || true
         fi
     fi
     
@@ -961,25 +974,32 @@ preprocess_photorec_dirs() {
     find "$source_dir" -type f -size -${SKIP_SIZE}c -print | xargs -P "${PARALLEL_JOBS:-4}" -I{} bash -c '
         file="$1"
         
+        # Skip missing files (may have been processed by another thread)
+        if [ ! -f "$file" ]; then
+            # Silently update counter and return
+            { flock "$COUNTER_FILE" sh -c "current=\$(cat \"$COUNTER_FILE\" 2>/dev/null || echo 0); current=\${current:-0}; echo \$((current + 1)) > \"$COUNTER_FILE\""; } 2>/dev/null
+            exit 0
+        fi
+        
         # Quick file command check without complex regex
-        file_info=$(file -b "$file")
+        file_info=$(file -b "$file" 2>/dev/null || echo "unknown")
         
         # Basic categorization with simpler patterns
         if echo "$file_info" | grep -q "text\|script\|source"; then
             # Probably code or text
-            '"$FILE_OP"' "$file" "'"$target_dir"'/code/$(basename "$file")"
+            '"$FILE_OP"' "$file" "'"$target_dir"'/code/$(basename "$file")" 2>/dev/null || true
         elif echo "$file_info" | grep -q "image\|video\|audio"; then
             # Media file
-            '"$FILE_OP"' "$file" "'"$target_dir"'/media/$(basename "$file")"
+            '"$FILE_OP"' "$file" "'"$target_dir"'/media/$(basename "$file")" 2>/dev/null || true
         elif echo "$file_info" | grep -q "document\|PDF"; then
             # Document
-            '"$FILE_OP"' "$file" "'"$target_dir"'/docs/$(basename "$file")"
+            '"$FILE_OP"' "$file" "'"$target_dir"'/docs/$(basename "$file")" 2>/dev/null || true
         elif echo "$file_info" | grep -q "archive\|compressed"; then
             # Archive
-            '"$FILE_OP"' "$file" "'"$target_dir"'/archives/$(basename "$file")"
+            '"$FILE_OP"' "$file" "'"$target_dir"'/archives/$(basename "$file")" 2>/dev/null || true
         else
             # Unknown
-            '"$FILE_OP"' "$file" "'"$target_dir"'/unknown/$(basename "$file")"
+            '"$FILE_OP"' "$file" "'"$target_dir"'/unknown/$(basename "$file")" 2>/dev/null || true
         fi
         
         # Atomic counter update with proper error redirection
